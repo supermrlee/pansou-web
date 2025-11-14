@@ -384,7 +384,7 @@ onMounted(() => {
           :class="{ 'active': activeTab === 'channels' }"
           @click="activeTab = 'channels'"
         >
-          <span class="tab-label">TG频道</span>
+          <span class="tab-label">资源频道</span>
           <span class="tab-count">{{ allChannels.length }}</span>
         </button>
         <button 
@@ -407,11 +407,11 @@ onMounted(() => {
 
       <!-- Tab内容 -->
       <div class="tab-content">
-        <!-- TG频道配置 -->
+        <!-- 频道配置 -->
         <div v-show="activeTab === 'channels'" class="tab-pane">
           <div class="pane-header">
             <div class="pane-title">
-              <h3>TG 频道配置</h3>
+              <h3>频道配置</h3>
               <span class="selected-count">已选 {{ selectedChannels.length }} / {{ allChannels.length }}</span>
             </div>
             <div class="pane-actions">
@@ -430,7 +430,7 @@ onMounted(() => {
             <input
               v-model="newChannelInput"
               type="text"
-              placeholder="输入TG频道名称 (例如: tgsearchers3)"
+              placeholder="输入频道名称 (无经验者请误操作)"
               @keydown.enter="addChannel"
               class="channel-input"
             />
