@@ -149,7 +149,7 @@ const handleSearch = () => {
             <input
               v-model="keyword"
               type="text"
-              placeholder="搜索资源、电影、音乐、软件..."
+              placeholder="请输入关键词进行搜索"
               :disabled="loading"
               @keydown.enter="handleSearch"
               class="flex h-10 outline-none focus:outline-none rounded-md border bg-background px-3 py-2 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 w-full text-center pl-12 pr-12 transition-all duration-300 border-primary/20 hover:border-primary/40 shadow-sm hover:shadow-md focus-visible:shadow-lg focus-visible:ring-primary/30 focus-visible:ring-offset-0 focus-visible:border-primary/60"
