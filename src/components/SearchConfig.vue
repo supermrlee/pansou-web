@@ -325,7 +325,7 @@ const copyPluginsConfig = async () => {
 const copyChannelsConfig = async () => {
   const data = getExportData();
   const content = data.channels ? `export CHANNELS=${data.channels}` : 'export CHANNELS=';
-  await copyToClipboard(content, 'TG频道配置已复制！');
+  await copyToClipboard(content, '频道配置已复制！');
 };
 
 // 组件挂载
@@ -430,7 +430,7 @@ onMounted(() => {
             <input
               v-model="newChannelInput"
               type="text"
-              placeholder="输入频道名称 (无经验者请误操作)"
+              placeholder="输入频道名称 (无经验者请勿操作)"
               @keydown.enter="addChannel"
               class="channel-input"
             />
@@ -615,12 +615,12 @@ onMounted(() => {
                 </div>
               </div>
               
-              <!-- TG频道配置区域 -->
+              <!-- 频道配置区域 -->
               <div class="export-section">
                 <div class="section-header">
                   <h3 class="section-title">
                     <span class="section-icon">📡</span>
-                    TG频道配置
+                    频道配置
                   </h3>
                   <button @click="copyChannelsConfig" class="copy-section-btn">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
