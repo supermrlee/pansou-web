@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import AccountServiceCard from '@/components/AccountServiceCard.vue'
 import QQPDIcon from '@/components/icons/QQPDIcon.vue'
 import GyingIcon from '@/components/icons/GyingIcon.vue'
+import PanlianIcon from '@/components/icons/PanlianIcon.vue'
 import WeiboIcon from '@/components/icons/WeiboIcon.vue'
 import type { HealthStatus } from '@/api'
+import {
+  DEFAULT_GYING_BASE_URL,
+  GYING_BASE_URL_STORAGE_KEY,
+  getStoredGyingBaseURL
+} from '@/utils/gying'
 
 // 定义Props
 interface Props {
@@ -15,7 +21,7 @@ const props = defineProps<Props>()
 
 // 定义事件
 const emit = defineEmits<{
-  (e: 'navigate', page: 'qqpd' | 'gying' | 'weibo'): void
+  (e: 'navigate', page: 'qqpd' | 'gying' | 'panlian' | 'weibo'): void
 }>()
 
 // QQPD账号状态
@@ -25,6 +31,11 @@ const qqpdAccountCount = computed(() => qqpdAccounts.value.length)
 // Gying账号状态  
 const gyingAccounts = ref<any[]>([])
 const gyingAccountCount = computed(() => gyingAccounts.value.length)
+const gyingBaseURL = ref(DEFAULT_GYING_BASE_URL)
+
+// 盘链账号状态
+const panlianAccounts = ref<any[]>([])
+const panlianAccountCount = computed(() => panlianAccounts.value.length)
 
 // Weibo账号状态
 const weiboAccounts = ref<any[]>([])
@@ -39,6 +50,10 @@ const isGyingEnabled = computed(() => {
   return props.backendHealth?.plugins?.includes('gying') || false
 })
 
+const isPanlianEnabled = computed(() => {
+  return props.backendHealth?.plugins?.includes('panlian') || false
+})
+
 const isWeiboEnabled = computed(() => {
   return props.backendHealth?.plugins?.includes('weibo') || false
 })
@@ -48,23 +63,22 @@ const loadAccountsStatus = () => {
   try {
     // 加载QQPD账号
     const qqpdUsersStr = localStorage.getItem('qqpd_users')
-    if (qqpdUsersStr) {
-      qqpdAccounts.value = JSON.parse(qqpdUsersStr)
-    }
+    qqpdAccounts.value = qqpdUsersStr ? JSON.parse(qqpdUsersStr) : []
     
     // 加载Gying账号
     const gyingUsersStr = localStorage.getItem('gying_users')
-    if (gyingUsersStr) {
-      gyingAccounts.value = JSON.parse(gyingUsersStr)
-    }
+    gyingAccounts.value = gyingUsersStr ? JSON.parse(gyingUsersStr) : []
+    gyingBaseURL.value = getStoredGyingBaseURL()
+
+    const panlianUsersStr = localStorage.getItem('panlian_users')
+    panlianAccounts.value = panlianUsersStr ? JSON.parse(panlianUsersStr) : []
     
     // 加载Weibo账号
     const weiboUsersStr = localStorage.getItem('weibo_users')
-    if (weiboUsersStr) {
-      weiboAccounts.value = JSON.parse(weiboUsersStr)
-    }
+    weiboAccounts.value = weiboUsersStr ? JSON.parse(weiboUsersStr) : []
   } catch (error) {
     console.error('加载账号状态失败:', error)
+    gyingBaseURL.value = DEFAULT_GYING_BASE_URL
   }
 }
 
@@ -103,6 +117,24 @@ const gyingStatusText = computed(() => {
   return ''
 })
 
+const panlianStatusText = computed(() => {
+  if (panlianAccountCount.value === 0) return ''
+
+  const latestAccount = panlianAccounts.value.reduce((latest: any, account: any) => {
+    if (!latest || (account.last_login && account.last_login > latest.last_login)) {
+      return account
+    }
+    return latest
+  }, null)
+
+  if (latestAccount?.last_login) {
+    const date = new Date(latestAccount.last_login)
+    return `最近登录: ${date.toLocaleDateString('zh-CN')}`
+  }
+
+  return ''
+})
+
 // 计算Weibo状态文本
 const weiboStatusText = computed(() => {
   if (weiboAccountCount.value === 0) return ''
@@ -118,30 +150,30 @@ const weiboStatusText = computed(() => {
   return totalUserIds > 0 ? `配置了 ${totalUserIds} 个用户ID` : ''
 })
 
-// 组件挂载时加载状态
-onMounted(() => {
-  loadAccountsStatus()
-})
-
 // 监听localStorage变化
 const handleStorageChange = (e: StorageEvent) => {
-  if (e.key === 'qqpd_users' || e.key === 'gying_users' || e.key === 'weibo_users') {
+  if (
+    e.key === 'qqpd_users' ||
+    e.key === 'gying_users' ||
+    e.key === 'panlian_users' ||
+    e.key === 'weibo_users' ||
+    e.key === GYING_BASE_URL_STORAGE_KEY
+  ) {
     loadAccountsStatus()
   }
 }
 
 onMounted(() => {
+  loadAccountsStatus()
   window.addEventListener('storage', handleStorageChange)
 })
 
-// 组件卸载时移除监听
-import { onUnmounted } from 'vue'
 onUnmounted(() => {
   window.removeEventListener('storage', handleStorageChange)
 })
 
 // 导航到服务管理页面
-const navigateToService = (service: 'qqpd' | 'gying' | 'weibo') => {
+const navigateToService = (service: 'qqpd' | 'gying' | 'panlian' | 'weibo') => {
   emit('navigate', service)
 }
 </script>
@@ -157,11 +189,11 @@ const navigateToService = (service: 'qqpd' | 'gying' | 'weibo') => {
     <!-- 统计概览 -->
     <div class="stats-overview">
       <div class="stat-card">
-        <div class="stat-value">{{ [isQQPDEnabled, isGyingEnabled, isWeiboEnabled].filter(Boolean).length }}</div>
+        <div class="stat-value">{{ [isQQPDEnabled, isGyingEnabled, isPanlianEnabled, isWeiboEnabled].filter(Boolean).length }}</div>
         <div class="stat-label">可用服务</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">{{ qqpdAccountCount + gyingAccountCount + weiboAccountCount }}</div>
+        <div class="stat-value">{{ qqpdAccountCount + gyingAccountCount + panlianAccountCount + weiboAccountCount }}</div>
         <div class="stat-label">已登录账号</div>
       </div>
     </div>
@@ -191,8 +223,19 @@ const navigateToService = (service: 'qqpd' | 'gying' | 'weibo') => {
           :account-count="gyingAccountCount"
           :enabled="isGyingEnabled"
           :status-text="gyingStatusText"
-          external-link="https://www.gying.net/"
+          :external-link="gyingBaseURL"
           @manage="navigateToService('gying')"
+        />
+
+        <AccountServiceCard
+          :icon-component="PanlianIcon"
+          name="盘链"
+          description="用户名密码登录，验证盘链搜索与网盘链接抓取"
+          :account-count="panlianAccountCount"
+          :enabled="isPanlianEnabled"
+          :status-text="panlianStatusText"
+          external-link="https://pinglian.lol/"
+          @manage="navigateToService('panlian')"
         />
         
         <!-- 微博卡片 -->
@@ -209,12 +252,12 @@ const navigateToService = (service: 'qqpd' | 'gying' | 'weibo') => {
       </div>
       
       <!-- 提示信息 -->
-      <div v-if="!isQQPDEnabled && !isGyingEnabled && !isWeiboEnabled" class="empty-state">
+      <div v-if="!isQQPDEnabled && !isGyingEnabled && !isPanlianEnabled && !isWeiboEnabled" class="empty-state">
         <svg class="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
         </svg>
         <p class="empty-text">后端未启用任何需要登录的服务</p>
-        <p class="empty-hint">请在后端配置中启用 qqpd、gying 或 weibo 插件</p>
+        <p class="empty-hint">请在后端配置中启用 qqpd、gying、panlian 或 weibo 插件</p>
       </div>
       
       <!-- 占位卡片 -->
@@ -405,4 +448,3 @@ const navigateToService = (service: 'qqpd' | 'gying' | 'weibo') => {
   }
 }
 </style>
-

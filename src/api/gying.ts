@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type {
+  GyingConfigResponse,
   GyingStatusResponse,
   GyingLoginResponse,
   GyingLogoutResponse,
@@ -7,9 +8,12 @@ import type {
 } from '@/types/gying'
 
 // 创建Gying API实例
+const GYING_DEFAULT_TIMEOUT = 30000
+const GYING_LONG_TIMEOUT = 120000
+
 const gyingApi = axios.create({
   baseURL: '/gying',  // 代理到后端 http://localhost:8888/gying
-  timeout: 15000
+  timeout: GYING_DEFAULT_TIMEOUT
 })
 
 // 请求拦截器 - 自动添加token（支持安全认证）
@@ -58,6 +62,30 @@ export const getStatus = async (hash: string): Promise<GyingStatusResponse> => {
 }
 
 /**
+ * 获取当前站点配置
+ * @param hash 用户专属hash
+ */
+export const getConfig = async (hash: string): Promise<GyingConfigResponse> => {
+  const response = await gyingApi.post<GyingConfigResponse>(`/${hash}`, {
+    action: 'get_config'
+  })
+  return response.data
+}
+
+/**
+ * 更新当前站点配置
+ * @param hash 用户专属hash
+ * @param baseURL 自定义站点地址
+ */
+export const updateConfig = async (hash: string, baseURL: string): Promise<GyingConfigResponse> => {
+  const response = await gyingApi.post<GyingConfigResponse>(`/${hash}`, {
+    action: 'update_config',
+    base_url: baseURL
+  })
+  return response.data
+}
+
+/**
  * 登录
  * @param hash 用户专属hash
  * @param username 用户名
@@ -68,6 +96,8 @@ export const login = async (hash: string, username: string, password: string): P
     action: 'login',
     username,
     password
+  }, {
+    timeout: GYING_LONG_TIMEOUT
   })
   return response.data
 }
@@ -98,6 +128,8 @@ export const testSearch = async (
     action: 'test_search',
     keyword,
     max_results: maxResults
+  }, {
+    timeout: GYING_LONG_TIMEOUT
   })
   return response.data
 }
@@ -134,9 +166,10 @@ export const getHashByUsername = async (username: string): Promise<string> => {
 // 导出所有API函数
 export default {
   getStatus,
+  getConfig,
+  updateConfig,
   login,
   logout,
   testSearch,
   getHashByUsername
 }
-

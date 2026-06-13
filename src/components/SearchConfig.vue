@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
 import { type HealthStatus } from '@/api';
+import type { DetectionSettings } from '@/types';
+import { loadDetectionSettings, persistDetectionSettings } from '@/utils/linkDetection';
 
 // 接收后端健康状态作为 props
 const props = defineProps<{
@@ -9,19 +11,25 @@ const props = defineProps<{
 
 // 网盘类型配置
 const diskTypes = [
-  { id: 'baidu', name: '百度网盘', color: '#2932e1' },
-  { id: 'aliyun', name: '阿里云盘', color: '#ff6a00' },
-  { id: 'quark', name: '夸克网盘', color: '#1890ff' },
-  { id: 'tianyi', name: '天翼云盘', color: '#0066cc' },
-  { id: '115', name: '115网盘', color: '#02a7f0' },
-  { id: 'xunlei', name: '迅雷网盘', color: '#0090ff' },
-  { id: 'uc', name: 'UC网盘', color: '#ff6600' },
-  { id: 'mobile', name: '移动云盘', color: '#0080ff' },
+  { id: 'baidu', name: '百度', color: '#2932e1' },
+  { id: 'aliyun', name: '阿里', color: '#ff6a00' },
+  { id: 'quark', name: '夸克', color: '#1890ff' },
+  { id: 'guangya', name: '光鸭', color: '#0ea5a3' },
+  { id: 'tianyi', name: '天翼', color: '#0066cc' },
+  { id: '115', name: '115', color: '#02a7f0' },
+  { id: 'xunlei', name: '迅雷', color: '#0090ff' },
+  { id: 'uc', name: 'UC', color: '#ff6600' },
+  { id: 'mobile', name: '移动', color: '#0080ff' },
   { id: 'pikpak', name: 'PikPak', color: '#ff4785' },
-  { id: '123', name: '123网盘', color: '#00b96b' },
-  { id: 'magnet', name: '磁力链接', color: '#722ed1' },
-  { id: 'ed2k', name: '电驴链接', color: '#fa8c16' }
+  { id: '123', name: '123', color: '#00b96b' },
+  { id: 'magnet', name: '磁力', color: '#722ed1' },
+  { id: 'ed2k', name: '电驴', color: '#fa8c16' }
 ];
+
+const normalizeSavedDiskTypes = (savedTypes: string[]) => {
+  const currentTypeIds = new Set(diskTypes.map((item) => item.id));
+  return savedTypes.filter((type) => currentTypeIds.has(type));
+};
 
 // 状态数据（使用传入的 props）
 const healthData = ref<HealthStatus | null>(null);
@@ -46,7 +54,8 @@ const saveTimeout = ref<number | null>(null);
 const showExportModal = ref(false);
 
 // Tab状态
-const activeTab = ref<'channels' | 'plugins' | 'diskTypes'>('channels');
+const activeTab = ref<'channels' | 'plugins' | 'diskTypes' | 'detection'>('channels');
+const detectionSettings = ref<DetectionSettings>(loadDetectionSettings());
 
 // 计算属性
 const allChannels = computed(() => {
@@ -108,7 +117,7 @@ const loadConfig = () => {
     }
 
     if (savedDiskTypes) {
-      selectedDiskTypes.value = JSON.parse(savedDiskTypes);
+      selectedDiskTypes.value = normalizeSavedDiskTypes(JSON.parse(savedDiskTypes));
     } else {
       // 默认选中所有网盘类型
       selectedDiskTypes.value = diskTypes.map(d => d.id);
@@ -129,6 +138,7 @@ const saveConfig = () => {
     localStorage.setItem('pansou_plugins', JSON.stringify(selectedPlugins.value));
     localStorage.setItem('pansou_disk_types', JSON.stringify(selectedDiskTypes.value));
     localStorage.setItem('pansou_custom_channels', JSON.stringify(customChannels.value));
+    persistDetectionSettings(detectionSettings.value);
 
     // 显示保存成功提示
     saveSuccess.value = true;
@@ -246,6 +256,9 @@ const resetToDefault = () => {
       selectedPlugins.value = [...healthData.value.plugins];
       selectedDiskTypes.value = diskTypes.map(d => d.id);
       customChannels.value = [];
+      detectionSettings.value = {
+        enabled: false
+      };
       saveConfig();
     }
   }
@@ -332,6 +345,7 @@ const copyChannelsConfig = async () => {
 onMounted(() => {
   initHealth();
   loadConfig();
+  detectionSettings.value = loadDetectionSettings();
 });
 </script>
 
@@ -402,6 +416,19 @@ onMounted(() => {
         >
           <span class="tab-label">网盘类型</span>
           <span class="tab-count">{{ diskTypes.length }}</span>
+        </button>
+        <button 
+          class="tab-button" 
+          :class="{ 'active': activeTab === 'detection' }"
+          @click="activeTab = 'detection'"
+        >
+          <span class="tab-label">检测</span>
+          <span
+            class="tab-status"
+            :class="detectionSettings.enabled ? 'enabled' : 'disabled'"
+          >
+            {{ detectionSettings.enabled ? '已开启' : '已关闭' }}
+          </span>
         </button>
       </div>
 
@@ -547,6 +574,37 @@ onMounted(() => {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div v-show="activeTab === 'detection'" class="tab-pane">
+          <div class="pane-header">
+            <div class="pane-title">
+              <h3>链接检测</h3>
+            </div>
+          </div>
+
+          <div class="pane-content">
+            <label class="detection-card" for="detection-toggle">
+              <div class="detection-copy">
+                <div class="detection-title">自动检测当前可见链接</div>
+                <p class="detection-description">
+                  仅检测当前网盘标签页中屏幕可见的结果，减少性能消耗与风控风险。
+                </p>
+              </div>
+
+              <div class="toggle-shell">
+                <input
+                  id="detection-toggle"
+                  v-model="detectionSettings.enabled"
+                  class="toggle-input"
+                  type="checkbox"
+                />
+                <span class="toggle-track" :class="{ active: detectionSettings.enabled }">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </div>
+            </label>
           </div>
         </div>
       </div>
@@ -824,6 +882,44 @@ onMounted(() => {
   color: hsl(var(--primary-foreground));
 }
 
+.tab-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.75rem;
+  height: 1.5rem;
+  padding: 0 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.tab-status.enabled {
+  background: rgb(34 197 94 / 0.12);
+  color: rgb(21 128 61);
+  border-color: rgb(34 197 94 / 0.18);
+}
+
+.tab-status.disabled {
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border));
+}
+
+.tab-button.active .tab-status.enabled {
+  background: rgb(34 197 94 / 0.16);
+  color: rgb(21 128 61);
+}
+
+.tab-button.active .tab-status.disabled {
+  background: hsl(var(--foreground) / 0.08);
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border));
+}
+
 /* Tab内容 */
 .tab-content {
   background: hsl(var(--card));
@@ -1031,6 +1127,73 @@ onMounted(() => {
 .item-card.selected {
   background: hsl(var(--primary) / 0.1);
   border-color: hsl(var(--primary));
+}
+
+.detection-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  background: hsl(var(--background));
+  cursor: pointer;
+}
+
+.detection-copy {
+  min-width: 0;
+}
+
+.detection-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.detection-description {
+  margin: 0.4rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+.toggle-shell {
+  flex-shrink: 0;
+}
+
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  display: inline-flex;
+  align-items: center;
+  width: 2.75rem;
+  height: 1.6rem;
+  padding: 0.125rem;
+  border-radius: 9999px;
+  background: hsl(var(--muted));
+  transition: background-color 0.2s ease;
+}
+
+.toggle-track.active {
+  background: hsl(var(--primary) / 0.85);
+}
+
+.toggle-thumb {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+  transition: transform 0.2s ease;
+}
+
+.toggle-track.active .toggle-thumb {
+  transform: translateX(1.15rem);
 }
 
 .item-content {
@@ -1476,6 +1639,10 @@ onMounted(() => {
     flex-direction: column;
   }
 
+  .detection-card {
+    align-items: flex-start;
+  }
+
   .channel-input {
     width: 100%;
     min-width: auto;
@@ -1534,4 +1701,3 @@ onMounted(() => {
   }
 }
 </style>
-

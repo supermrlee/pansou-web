@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, computed } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
 import { search, logout, getHealth, verifyToken, type SearchParams, type HealthStatus } from '@/api';
-import type { SearchResponse, MergedResults } from '@/types';
+import type { SearchResponse, MergedResults, ExportField, ExportSettings } from '@/types';
 import SearchForm from '@/components/SearchForm.vue';
 import ResultTabs from '@/components/ResultTabs.vue';
 import SearchStats from '@/components/SearchStats.vue';
@@ -11,7 +11,10 @@ import LoginDialog from '@/components/LoginDialog.vue';
 import QQPDManager from '@/components/QQPDManager.vue';
 import AccountCenter from '@/components/AccountCenter.vue';
 import GyingManager from '@/components/GyingManager.vue';
+import PanlianManager from '@/components/PanlianManager.vue';
 import WeiboManager from '@/components/WeiboManager.vue';
+import ExportResultsModal from '@/components/ExportResultsModal.vue';
+import { getDiskTypeName } from '@/utils/diskTypes';
 
 // 后端健康状态缓存（应用启动时获取一次）
 const backendHealth = ref<HealthStatus | null>(null);
@@ -37,17 +40,42 @@ const secondSearchTimeout = ref<number | null>(null);
 const thirdSearchTimeout = ref<number | null>(null);
 const fourthSearchTimeout = ref<number | null>(null);
 const lastSearchParams = ref<SearchParams | null>(null);
+const showExportModal = ref(false);
+const navHeaderRef = ref<HTMLElement | null>(null);
+const mainContentRef = ref<HTMLElement | null>(null);
+const footerRef = ref<HTMLElement | null>(null);
+const searchResultsBlockRef = ref<HTMLElement | null>(null);
+const mobileSearchResultsHeight = ref<string>('');
+const exportSettings = ref<ExportSettings>({
+  format: 'json',
+  fields: ['title', 'source', 'datetime'],
+  prettyJson: true,
+  includeFieldLabels: true,
+  selectedDiskTypes: [],
+  allDiskTypesSelected: true
+});
+
+const EXPORT_SETTINGS_STORAGE_KEY = 'pansou_export_settings';
 
 // 是否已经执行过搜索
 const hasSearched = ref(false);
 // 是否正在进行后台搜索（包括初始搜索和后续更新）
 const isActivelySearching = ref(false);
+const hasExportableResults = computed(() => {
+  return Object.values(searchResults.mergedResults || {}).some(items => Array.isArray(items) && items.length > 0);
+});
+const exportableDiskTypes = computed(() => {
+  return Object.keys(searchResults.mergedResults || {}).filter(key => {
+    const items = searchResults.mergedResults[key];
+    return Array.isArray(items) && items.length > 0;
+  });
+});
 
 // 强制刷新逻辑
 let forceRefreshPending = false;
 
 // 当前页面状态
-const currentPage = ref<'search' | 'status' | 'docs' | 'accounts' | 'qqpd' | 'gying' | 'weibo'>('search');
+const currentPage = ref<'search' | 'status' | 'docs' | 'accounts' | 'qqpd' | 'gying' | 'panlian' | 'weibo'>('search');
 
 // 登录状态
 const showLogin = ref(false);
@@ -60,12 +88,15 @@ const isQQPDEnabled = ref(false);
 // Gying插件状态
 const isGyingEnabled = ref(false);
 
+// 盘链插件状态
+const isPanlianEnabled = ref(false);
+
 // Weibo插件状态
 const isWeiboEnabled = ref(false);
 
 // 检查是否有需要账号管理的服务
 const hasAccountServices = computed(() => {
-  return isQQPDEnabled.value || isGyingEnabled.value || isWeiboEnabled.value;
+  return isQQPDEnabled.value || isGyingEnabled.value || isPanlianEnabled.value || isWeiboEnabled.value;
 });
 
 // 页面切换
@@ -89,16 +120,22 @@ const switchToGying = () => {
   currentPage.value = 'gying';
 };
 
+const switchToPanlian = () => {
+  currentPage.value = 'panlian';
+};
+
 const switchToWeibo = () => {
   currentPage.value = 'weibo';
 };
 
 // 从账号中心导航到具体服务
-const handleAccountNavigate = (service: 'qqpd' | 'gying' | 'weibo') => {
+const handleAccountNavigate = (service: 'qqpd' | 'gying' | 'panlian' | 'weibo') => {
   if (service === 'qqpd') {
     switchToQQPD();
   } else if (service === 'gying') {
     switchToGying();
+  } else if (service === 'panlian') {
+    switchToPanlian();
   } else if (service === 'weibo') {
     switchToWeibo();
   }
@@ -190,9 +227,6 @@ const handleSearch = async (params: SearchParams) => {
       
       // 后台预热搜索，仅用于触发后端插件异步缓存，不处理结果
       search(preloadParams)
-        .then(() => {
-          console.log('后台预热搜索已触发，用于提前启动插件异步缓存');
-        })
         .catch(error => {
           console.warn('后台预热搜索失败（不影响主搜索）:', error);
         });
@@ -255,44 +289,58 @@ const handleSearchComplete = () => {
   // 只处理UI相关的状态，不影响搜索流程
 };
 
-// 应用关键词过滤
-const applyKeywordFilter = (results: any, filterKeywords: string, filterMode: 'include' | 'exclude') => {
-  if (!results || !filterKeywords.trim()) return results;
+// 应用关键词过滤（后端filter参数已经处理，这里保留作为备用）
+const applyKeywordFilter = (results: any, filterStr: string) => {
+  if (!results || !filterStr.trim()) return results;
   
-  // 将过滤关键词分割成数组（支持空格和逗号分隔）
-  const keywords = filterKeywords.split(/[,\s]+/).filter(k => k.trim()).map(k => k.toLowerCase());
-  if (keywords.length === 0) return results;
-  
-  const filteredResults: any = {};
-  
-  // 遍历每个网盘类型的结果
-  Object.keys(results).forEach(diskType => {
-    const diskResults = results[diskType];
-    if (!Array.isArray(diskResults)) return;
+  try {
+    const filter = JSON.parse(filterStr);
+    const includeKeywords = (filter.include || []).map((k: string) => k.toLowerCase());
+    const excludeKeywords = (filter.exclude || []).map((k: string) => k.toLowerCase());
     
-    // 过滤每个结果项
-    const filtered = diskResults.filter((item: any) => {
-      // merged_by_type 中的数据结构使用 note 字段，而不是 title
-      const note = (item.note || '').toLowerCase();
-      const source = (item.source || '').toLowerCase();
-      const searchText = `${note} ${source}`;
+    if (includeKeywords.length === 0 && excludeKeywords.length === 0) {
+      return results;
+    }
+    
+    const filteredResults: any = {};
+    
+    // 遍历每个网盘类型的结果
+    Object.keys(results).forEach(diskType => {
+      const diskResults = results[diskType];
+      if (!Array.isArray(diskResults)) return;
       
-      if (filterMode === 'include') {
-        // 包含模式：至少包含一个关键词
-        return keywords.some(keyword => searchText.includes(keyword));
-      } else {
-        // 排除模式：不包含任何一个关键词
-        return !keywords.some(keyword => searchText.includes(keyword));
+      // 过滤每个结果项
+      const filtered = diskResults.filter((item: any) => {
+        const note = (item.note || '').toLowerCase();
+        const source = (item.source || '').toLowerCase();
+        const searchText = `${note} ${source}`;
+        
+        // 包含检查 (OR关系)：如果有include，必须至少包含一个
+        if (includeKeywords.length > 0) {
+          const hasInclude = includeKeywords.some(keyword => searchText.includes(keyword));
+          if (!hasInclude) return false;
+        }
+        
+        // 排除检查 (OR关系)：如果有exclude，包含任意一个就排除
+        if (excludeKeywords.length > 0) {
+          const hasExclude = excludeKeywords.some(keyword => searchText.includes(keyword));
+          if (hasExclude) return false;
+        }
+        
+        return true;
+      });
+      
+      // 只保留有结果的网盘类型
+      if (filtered.length > 0) {
+        filteredResults[diskType] = filtered;
       }
     });
     
-    // 只保留有结果的网盘类型
-    if (filtered.length > 0) {
-      filteredResults[diskType] = filtered;
-    }
-  });
-  
-  return filteredResults;
+    return filteredResults;
+  } catch (error) {
+    console.error('过滤参数解析失败:', error);
+    return results;
+  }
 };
 
 // 更新搜索结果
@@ -304,24 +352,11 @@ const updateSearchResults = (response: SearchResponse) => {
   if (response.merged_by_type) {
     let results = { ...response.merged_by_type };
     
-    // 应用过滤（如果有过滤参数）
-    if (lastSearchParams.value) {
-      const filterKeywords = (lastSearchParams.value as any).filter_keywords;
-      const filterMode = (lastSearchParams.value as any).filter_mode || 'include';
-      
-      if (filterKeywords) {
-        results = applyKeywordFilter(results, filterKeywords, filterMode);
-        
-        // 重新计算总数
-        let filteredTotal = 0;
-        Object.values(results).forEach((diskResults: any) => {
-          if (Array.isArray(diskResults)) {
-            filteredTotal += diskResults.length;
-          }
-        });
-        searchResults.total = filteredTotal;
-      }
-    }
+    // 注意：后端已经处理了filter参数，这里不再需要前端过滤
+    // 保留以下代码作为备用，但不执行
+    // if (lastSearchParams.value && (lastSearchParams.value as any).filter) {
+    //   results = applyKeywordFilter(results, (lastSearchParams.value as any).filter);
+    // }
     
     searchResults.mergedResults = results;
   } else {
@@ -329,6 +364,348 @@ const updateSearchResults = (response: SearchResponse) => {
     searchResults.mergedResults = {};
   }
 };
+
+const loadExportSettings = () => {
+  try {
+    const saved = localStorage.getItem(EXPORT_SETTINGS_STORAGE_KEY);
+    if (!saved) return;
+
+    const parsed = JSON.parse(saved);
+    const allowedFields: ExportField[] = ['sequence', 'title', 'source', 'datetime'];
+    const fields = Array.isArray(parsed.fields)
+      ? parsed.fields.filter((field: unknown): field is ExportField => allowedFields.includes(field as ExportField))
+      : exportSettings.value.fields;
+
+    exportSettings.value = {
+      format: parsed.format === 'txt' ? 'txt' : 'json',
+      fields,
+      prettyJson: parsed.prettyJson !== false,
+      includeFieldLabels: parsed.includeFieldLabels !== false,
+      selectedDiskTypes: Array.isArray(parsed.selectedDiskTypes) ? parsed.selectedDiskTypes : [],
+      allDiskTypesSelected: parsed.allDiskTypesSelected !== false
+    };
+  } catch (error) {
+    console.error('读取导出设置失败:', error);
+  }
+};
+
+const persistExportSettings = () => {
+  try {
+    localStorage.setItem(EXPORT_SETTINGS_STORAGE_KEY, JSON.stringify(exportSettings.value));
+  } catch (error) {
+    console.error('保存导出设置失败:', error);
+  }
+};
+
+const updateExportSettings = (value: ExportSettings) => {
+  exportSettings.value = {
+    ...value,
+    fields: [...value.fields]
+  };
+  persistExportSettings();
+};
+
+const openExportModal = () => {
+  if (!hasExportableResults.value) return;
+  showExportModal.value = true;
+};
+
+const closeExportModal = () => {
+  showExportModal.value = false;
+};
+
+type ExportRow = Record<ExportField, string>;
+type FixedExportFields = 'url' | 'password';
+type FullExportRow = ExportRow & Record<FixedExportFields, string> & { diskTypeKey: string; diskType: string };
+type ExportLinkBuildResult = {
+  url: string;
+  passwordIncluded: boolean;
+};
+
+const sanitizeFileNamePart = (value: string) => {
+  return value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, '-')
+    .slice(0, 48);
+};
+
+const normalizePasswordText = (value: string) => {
+  return value.trim().toLowerCase();
+};
+
+const isPasswordEmbeddedInUrl = (url: string, password: string) => {
+  if (!url || !password) return false;
+
+  const normalizedPassword = normalizePasswordText(password);
+  if (!normalizedPassword) return false;
+
+  const candidates = new Set<string>([url]);
+
+  try {
+    candidates.add(decodeURIComponent(url));
+  } catch {}
+
+  try {
+    candidates.add(decodeURI(url));
+  } catch {}
+
+  return Array.from(candidates).some(candidate => candidate.toLowerCase().includes(normalizedPassword));
+};
+
+const buildUrlWithQueryParam = (url: string, key: string, password: string) => {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set(key, password);
+    return parsed.toString();
+  } catch {
+    const connector = url.includes('?') ? '&' : '?';
+    return `${url}${connector}${key}=${encodeURIComponent(password)}`;
+  }
+};
+
+const buildIntegratedExportUrl = (diskTypeKey: string, url: string, password: string): ExportLinkBuildResult => {
+  if (!url || !password) {
+    return { url, passwordIncluded: !password };
+  }
+
+  if (isPasswordEmbeddedInUrl(url, password)) {
+    return { url, passwordIncluded: true };
+  }
+
+  const ruleMap: Record<string, string | null> = {
+    baidu: 'pwd',
+    tianyi: 'pwd',
+    mobile: 'pwd',
+    '123': 'pwd',
+    aliyun: 'password',
+    quark: 'pwd',
+    uc: 'pwd',
+    xunlei: 'pwd',
+    pikpak: 'pwd'
+  };
+
+  const paramName = ruleMap[diskTypeKey];
+  if (paramName) {
+    return {
+      url: buildUrlWithQueryParam(url, paramName, password),
+      passwordIncluded: true
+    };
+  }
+
+  return {
+    url,
+    passwordIncluded: false
+  };
+};
+
+const buildCombinedLinkLine = (row: FullExportRow) => {
+  const integrated = buildIntegratedExportUrl(row.diskTypeKey, row.url, row.password);
+
+  if (integrated.passwordIncluded || !row.password) {
+    return integrated.url;
+  }
+
+  return `${integrated.url} 提取码:${row.password}`;
+};
+
+const buildExportRows = () => {
+  const rows: FullExportRow[] = [];
+  const selectedSet = new Set((exportSettings.value.selectedDiskTypes || []).filter(Boolean));
+
+  Object.entries(searchResults.mergedResults || {}).forEach(([diskTypeKey, items]) => {
+    if (!Array.isArray(items)) return;
+    if (!exportSettings.value.allDiskTypesSelected && !selectedSet.has(diskTypeKey)) return;
+
+    items.forEach((item, index) => {
+      const row: FullExportRow = {
+        diskTypeKey,
+        diskType: getDiskTypeName(diskTypeKey),
+        sequence: String(index + 1),
+        title: item.note || '',
+        url: item.url || '',
+        password: item.password || '',
+        source: item.source || '',
+        datetime: item.datetime || ''
+      };
+
+      rows.push(row);
+    });
+  });
+
+  return rows;
+};
+
+const buildExportRecord = (row: FullExportRow, selectedFields: ExportField[]) => {
+  const integrated = buildIntegratedExportUrl(row.diskTypeKey, row.url, row.password);
+  const record = selectedFields.reduce<Record<string, string>>((record, field) => {
+    record[field] = row[field] || '';
+    return record;
+  }, {
+    url: integrated.url
+  });
+
+  if (row.password && !integrated.passwordIncluded) {
+    record.password = row.password;
+  }
+
+  return record;
+};
+
+const buildTxtValueLines = (row: FullExportRow, fields: ExportField[]) => {
+  const values: string[] = [];
+
+  fields.forEach(field => {
+    const value = row[field] || '';
+    if (value) {
+      values.push(value);
+    }
+  });
+
+  values.push(buildCombinedLinkLine(row));
+
+  return values.join('\n');
+};
+
+const buildJsonExportContent = (rows: FullExportRow[]) => {
+  const selectedFields = exportSettings.value.fields;
+  const groupedRows = rows.reduce<Record<string, FullExportRow[]>>((acc, row) => {
+    if (!acc[row.diskType]) acc[row.diskType] = [];
+    acc[row.diskType].push(row);
+    return acc;
+  }, {});
+
+  const payload = Object.entries(groupedRows).reduce<Record<string, Array<Record<string, string>>>>((acc, [diskType, groupRows]) => {
+    acc[diskType] = groupRows.map(row => buildExportRecord(row, selectedFields));
+    return acc;
+  }, {});
+
+  const meta = {
+    keyword: lastSearchParams.value?.kw || '',
+    total: searchResults.total,
+    exportedAt: new Date().toISOString(),
+    fields: [...selectedFields, 'url', 'password'],
+    groupedByDiskType: true,
+    diskTypes: exportSettings.value.allDiskTypesSelected
+      ? ['all']
+      : exportSettings.value.selectedDiskTypes
+  };
+
+  return JSON.stringify(
+    {
+      meta,
+      results: payload,
+      flatResults: rows.map(row => buildExportRecord(row, selectedFields))
+    },
+    null,
+    exportSettings.value.prettyJson ? 2 : 0
+  );
+};
+
+const fieldLabelMap: Record<ExportField | FixedExportFields, string> = {
+  sequence: '序号',
+  title: '标题',
+  url: '链接',
+  password: '提取码',
+  source: '来源',
+  datetime: '时间'
+};
+
+const buildTxtRow = (row: FullExportRow, fields: ExportField[]) => {
+  if (!exportSettings.value.includeFieldLabels) {
+    return buildTxtValueLines(row, fields);
+  }
+
+  const lines = fields.map(field => `${fieldLabelMap[field]}: ${row[field] || '无'}`);
+  lines.push(`${fieldLabelMap.url}: ${buildCombinedLinkLine(row)}`);
+
+  return lines.join('\n');
+};
+
+const buildTxtExportContent = (rows: FullExportRow[]) => {
+  const blocks: string[] = [];
+  const fields = exportSettings.value.fields;
+
+  const grouped = rows.reduce<Record<string, FullExportRow[]>>((acc, row) => {
+    if (!acc[row.diskType]) acc[row.diskType] = [];
+    acc[row.diskType].push(row);
+    return acc;
+  }, {});
+
+  Object.entries(grouped).forEach(([diskType, groupRows]) => {
+    blocks.push(`${diskType} (${groupRows.length})`);
+    blocks.push(groupRows.map((row) => buildTxtRow(row, fields)).join('\n\n'));
+  });
+
+  return blocks.filter(Boolean).join('\n\n');
+};
+
+const downloadContent = (content: string, fileName: string, mimeType: string) => {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+};
+
+const handleExportConfirm = () => {
+  if (!hasExportableResults.value) return;
+
+  persistExportSettings();
+
+  const rows = buildExportRows();
+  const keyword = sanitizeFileNamePart(lastSearchParams.value?.kw || 'results');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  if (exportSettings.value.format === 'json') {
+    const content = buildJsonExportContent(rows);
+    downloadContent(content, `pansou-${keyword}-${timestamp}.json`, 'application/json');
+  } else {
+    const content = buildTxtExportContent(rows);
+    downloadContent(content, `pansou-${keyword}-${timestamp}.txt`, 'text/plain');
+  }
+
+  closeExportModal();
+};
+
+const updateMobileSearchResultsHeight = () => {
+  if (typeof window === 'undefined' || window.innerWidth > 768) {
+    mobileSearchResultsHeight.value = '';
+    return;
+  }
+
+  const resultsBlock = searchResultsBlockRef.value;
+  const footer = footerRef.value;
+
+  if (!resultsBlock || !footer) {
+    mobileSearchResultsHeight.value = '';
+    return;
+  }
+
+  const resultsTop = resultsBlock.getBoundingClientRect().top;
+  const footerTop = footer.getBoundingClientRect().top;
+  const availableHeight = Math.floor(footerTop - resultsTop - 8);
+
+  mobileSearchResultsHeight.value = availableHeight > 0 ? `${availableHeight}px` : '';
+};
+
+const syncMobileSearchLayout = () => {
+  nextTick(() => {
+    updateMobileSearchResultsHeight();
+  });
+};
+
+watch(
+  () => [currentPage.value, hasSearched.value, loading.value, searchResults.total, isActivelySearching.value],
+  () => {
+    syncMobileSearchLayout();
+  },
+  { deep: true }
+);
 
 // 根据配置计算第二次、第三次搜索的src参数
 const calculateSrcForFullSearch = (): 'all' | 'tg' | 'plugin' => {
@@ -681,6 +1058,35 @@ const checkGyingPlugin = () => {
   }
 };
 
+// 检查盘链插件是否启用
+const checkPanlianPlugin = () => {
+  try {
+    const backendSupportsPanlian = backendHealth.value?.plugins?.includes('panlian') || false;
+
+    if (!backendSupportsPanlian) {
+      isPanlianEnabled.value = false;
+      return;
+    }
+
+    try {
+      const savedPlugins = localStorage.getItem('pansou_plugins');
+
+      if (savedPlugins === null) {
+        isPanlianEnabled.value = true;
+      } else {
+        const plugins = JSON.parse(savedPlugins);
+        isPanlianEnabled.value = Array.isArray(plugins) && plugins.includes('panlian');
+      }
+    } catch (err) {
+      console.error('读取用户插件配置失败:', err);
+      isPanlianEnabled.value = true;
+    }
+  } catch (error) {
+    console.error('检查Panlian插件失败:', error);
+    isPanlianEnabled.value = false;
+  }
+};
+
 // 检查Weibo插件是否启用
 const checkWeiboPlugin = () => {
   try {
@@ -716,6 +1122,7 @@ const handleStorageChange = (e: StorageEvent) => {
   if (e.key === 'pansou_plugins') {
     checkQQPDPlugin();
     checkGyingPlugin();
+    checkPanlianPlugin();
     checkWeiboPlugin();
   }
 };
@@ -724,6 +1131,7 @@ const handleStorageChange = (e: StorageEvent) => {
 const handleConfigSaved = () => {
   checkQQPDPlugin();
   checkGyingPlugin();
+  checkPanlianPlugin();
   checkWeiboPlugin();
 };
 
@@ -741,17 +1149,21 @@ const handleForceRefresh = () => {
 onMounted(async () => {
   // 首先初始化后端健康状态（只调用一次）
   await initBackendHealth();
+  loadExportSettings();
+  syncMobileSearchLayout();
   
   // 然后初始化其他状态
   checkAuth();
   checkQQPDPlugin();
   checkGyingPlugin();
+  checkPanlianPlugin();
   checkWeiboPlugin();
   
   // 监听事件
   window.addEventListener('auth:required', handleAuthRequired);
   window.addEventListener('storage', handleStorageChange);
   window.addEventListener('config:saved', handleConfigSaved);
+  window.addEventListener('resize', syncMobileSearchLayout);
 });
 
 onUnmounted(() => {
@@ -760,11 +1172,12 @@ onUnmounted(() => {
   window.removeEventListener('auth:required', handleAuthRequired);
   window.removeEventListener('storage', handleStorageChange);
   window.removeEventListener('config:saved', handleConfigSaved);
+  window.removeEventListener('resize', syncMobileSearchLayout);
 });
 </script>
 
 <template>
-  <div class="min-h-screen bg-background text-foreground transition-colors duration-300 flex flex-col">
+  <div class="app-shell min-h-screen bg-background text-foreground transition-colors duration-300 flex flex-col">
     <!-- 登录对话框 -->
     <LoginDialog 
       v-model:visible="showLogin" 
@@ -775,7 +1188,7 @@ onUnmounted(() => {
     <div class="bg-decorative"></div>
     
     <!-- 导航栏 -->
-    <nav class="nav-header backdrop-blur-md bg-background/80 border-b border-border">
+    <nav ref="navHeaderRef" class="nav-header backdrop-blur-md bg-background/80 border-b border-border">
       <div class="container mx-auto px-4 h-16 flex items-center justify-between">
         <div class="flex items-center gap-3 cursor-pointer" @click="switchToSearch">
           <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
@@ -838,7 +1251,7 @@ onUnmounted(() => {
             v-if="hasAccountServices"
             @click="switchToAccounts"
             class="nav-button"
-            :class="{ 'active': currentPage === 'accounts' || currentPage === 'qqpd' || currentPage === 'gying' || currentPage === 'weibo' }"
+            :class="{ 'active': currentPage === 'accounts' || currentPage === 'qqpd' || currentPage === 'gying' || currentPage === 'panlian' || currentPage === 'weibo' }"
             title="账号管理"
           >
             <span class="nav-icon">
@@ -866,11 +1279,15 @@ onUnmounted(() => {
     </nav>
     
     <!-- 主要内容区域 -->
-    <main class="container mx-auto px-4 py-8 flex-1">
+    <main
+      ref="mainContentRef"
+      class="main-content container mx-auto px-4 py-8 flex-1"
+      :class="{ 'search-main': currentPage === 'search' }"
+    >
       <!-- 搜索页面 -->
       <div v-if="currentPage === 'search'" class="search-page">
         <!-- 搜索表单 -->
-        <div class="mb-6">
+        <div class="search-form-block mb-6">
           <SearchForm 
             :backend-health="backendHealth"
             @search="handleSearch" 
@@ -879,7 +1296,7 @@ onUnmounted(() => {
         </div>
         
         <!-- 搜索统计 -->
-        <div v-if="hasSearched || loading" class="mb-6">
+        <div v-if="hasSearched || loading" class="search-stats-block mb-6">
           <SearchStats 
             :total="searchResults.total || 0" 
             :mergedResults="searchResults.mergedResults || {}" 
@@ -887,12 +1304,14 @@ onUnmounted(() => {
             :searchTime="searchTime"
             :isUpdating="isUpdating"
             :updateCount="updateCount"
+            :canExport="hasExportableResults"
+            @export-results="openExportModal"
             @force-refresh="handleForceRefresh"
           />
         </div>
         
         <!-- 加载状态 -->
-        <div v-if="loading" class="card p-6">
+        <div v-if="loading" class="search-loading-block card p-6">
           <div class="space-y-3">
             <div class="h-4 bg-muted rounded animate-pulse"></div>
             <div class="h-4 bg-muted rounded animate-pulse w-3/4"></div>
@@ -903,7 +1322,16 @@ onUnmounted(() => {
         </div>
         
         <!-- 搜索结果 -->
-        <div v-else>
+        <div
+          v-else
+          ref="searchResultsBlockRef"
+          class="search-results-block"
+          :style="mobileSearchResultsHeight ? {
+            height: mobileSearchResultsHeight,
+            minHeight: mobileSearchResultsHeight,
+            maxHeight: mobileSearchResultsHeight
+          } : undefined"
+        >
           <ResultTabs 
             :mergedResults="searchResults.mergedResults || {}" 
             :loading="loading"
@@ -911,6 +1339,16 @@ onUnmounted(() => {
             :isActivelySearching="isActivelySearching"
           />
         </div>
+
+        <ExportResultsModal
+          :visible="showExportModal"
+          :total="searchResults.total || 0"
+          :settings="exportSettings"
+          :available-disk-types="exportableDiskTypes"
+          @close="closeExportModal"
+          @update:settings="updateExportSettings"
+          @confirm="handleExportConfirm"
+        />
       </div>
       
       <!-- 配置页面 -->
@@ -940,6 +1378,10 @@ onUnmounted(() => {
       <div v-else-if="currentPage === 'gying'" class="gying-page">
         <GyingManager @back-to-center="switchToAccounts" />
       </div>
+
+      <div v-else-if="currentPage === 'panlian'" class="panlian-page">
+        <PanlianManager @back-to-center="switchToAccounts" />
+      </div>
       
       <!-- 微博管理页面 -->
       <div v-else-if="currentPage === 'weibo'" class="weibo-page">
@@ -948,7 +1390,7 @@ onUnmounted(() => {
     </main>
     
     <!-- 页脚 -->
-    <footer class="border-t border-border bg-background/50 backdrop-blur-sm mt-auto">
+    <footer ref="footerRef" class="footer-shell border-t border-border bg-background/50 backdrop-blur-sm mt-auto">
       <div class="container mx-auto px-4 py-4">
         <div class="flex items-center justify-center gap-4 text-sm text-muted-foreground">
           <span>© {{ new Date().getFullYear() }}-{{ new Date().getFullYear() + 10 }}</span>
@@ -1057,6 +1499,77 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .app-shell {
+    --mobile-footer-height: calc(3.15rem + env(safe-area-inset-bottom));
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .main-content {
+    flex: 1 1 auto;
+    height: calc(100dvh - 4rem - var(--mobile-footer-height));
+    min-height: 0;
+    box-sizing: border-box;
+    padding-top: 2rem;
+    padding-bottom: 0.5rem;
+    overflow: hidden;
+    overflow-x: hidden;
+  }
+
+  .main-content:not(.search-main) {
+    overflow-y: auto;
+  }
+
+  .footer-shell {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    min-height: var(--mobile-footer-height);
+    margin-top: 0 !important;
+  }
+
+  .footer-shell .container {
+    box-sizing: border-box;
+    padding-top: 0.2rem;
+    padding-bottom: calc(0.2rem + env(safe-area-inset-bottom));
+    min-height: var(--mobile-footer-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .footer-shell .container > div {
+    gap: 1rem;
+    font-size: 0.875rem;
+    line-height: 1.25;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .search-page {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    gap: 1rem;
+  }
+
+  .search-form-block,
+  .search-stats-block,
+  .search-loading-block {
+    margin-bottom: 0 !important;
+    min-height: 0;
+  }
+
+  .search-results-block {
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .container {
     padding-left: 1rem;
     padding-right: 1rem;
